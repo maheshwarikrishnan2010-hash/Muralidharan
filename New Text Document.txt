@@ -1,0 +1,354 @@
+import { useState, useMemo, useCallback, useEffect } from "react";
+import {
+  AreaChart, Area, LineChart, Line, BarChart, Bar,
+  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
+  ReferenceLine, RadialBarChart, RadialBar, PolarAngleAxis
+} from "recharts";
+import {
+  AlertTriangle, Activity, Heart, Moon, Zap, User, Bell,
+  BarChart2, Home, Brain, Shield, Clock, Pill, Search, X,
+  ChevronRight, Download, ArrowUp, ArrowDown, AlertCircle,
+  CheckCircle2, Droplets, TrendingUp, TrendingDown, Eye,
+  FileText, Filter, RefreshCw, ChevronLeft
+} from "lucide-react";
+
+/* ─────────────────────────────────────────────────────────────
+   DESIGN TOKENS
+───────────────────────────────────────────────────────────── */
+const C = {
+  bg: "#020c18",
+  surface: "#061220",
+  card: "#0a1c30",
+  cardHover: "#0d2240",
+  border: "#14334f",
+  borderBright: "#1e4d76",
+  teal: "#00e5d0",
+  tealDim: "#00a896",
+  tealGlow: "rgba(0,229,208,0.15)",
+  amber: "#f59e0b",
+  amberGlow: "rgba(245,158,11,0.15)",
+  red: "#ef4444",
+  redGlow: "rgba(239,68,68,0.15)",
+  green: "#22c55e",
+  greenGlow: "rgba(34,197,94,0.15)",
+  purple: "#a78bfa",
+  text: "#e2e8f0",
+  textMid: "#94a3b8",
+  textDim: "#4a6480",
+};
+
+const globalStyles = `
+  @import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&family=DM+Sans:wght@300;400;500&display=swap');
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: ${C.bg}; color: ${C.text}; font-family: 'DM Sans', sans-serif; overflow-x: hidden; }
+  ::-webkit-scrollbar { width: 4px; height: 4px; }
+  ::-webkit-scrollbar-track { background: ${C.surface}; }
+  ::-webkit-scrollbar-thumb { background: ${C.borderBright}; border-radius: 4px; }
+  .mono { font-family: 'IBM Plex Mono', monospace; }
+  .syne { font-family: 'Syne', sans-serif; }
+  @keyframes pulse-ring { 0%,100%{transform:scale(1);opacity:1} 50%{transform:scale(1.4);opacity:0} }
+  @keyframes fadeIn { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
+  @keyframes shimmer { 0%{background-position:-200%} 100%{background-position:200%} }
+  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.3} }
+  .fade-in { animation: fadeIn 0.35s ease forwards; }
+  .critical-blink { animation: blink 1.4s ease infinite; }
+`;
+
+/* ─────────────────────────────────────────────────────────────
+   SEEDED RNG
+───────────────────────────────────────────────────────────── */
+function mkRng(seed) {
+  let s = seed >>> 0;
+  return () => {
+    s ^= s << 13; s ^= s >> 17; s ^= s << 5;
+    return (s >>> 0) / 0xffffffff;
+  };
+}
+
+/* ─────────────────────────────────────────────────────────────
+   DATA GENERATION  (24 detailed patients × 180 days)
+───────────────────────────────────────────────────────────── */
+const DIAG_LIST = ["Type 2 Diabetes","Hypertension","Cardiovascular Disease","Chronic Kidney Disease","COPD","Atrial Fibrillation"];
+const MED_MAP = {
+  "Type 2 Diabetes":["Metformin 500mg","Glipizide 5mg","Insulin Glargine","Sitagliptin 100mg"],
+  "Hypertension":["Lisinopril 10mg","Amlodipine 5mg","Metoprolol 25mg","HCTZ 12.5mg"],
+  "Cardiovascular Disease":["Aspirin 81mg","Atorvastatin 40mg","Clopidogrel 75mg","Bisoprolol 5mg"],
+  "Chronic Kidney Disease":["Furosemide 20mg","Erythropoietin","Calcium Carbonate","Sodium Bicarbonate"],
+  "COPD":["Tiotropium","Salmeterol","Fluticasone","Salbutamol"],
+  "Atrial Fibrillation":["Warfarin 5mg","Amiodarone 200mg","Digoxin 0.125mg","Rivaroxaban 20mg"],
+};
+const FNAMES = ["James","Mary","Robert","Patricia","John","Jennifer","Michael","Linda","William","Barbara","David","Susan","Richard","Jessica","Joseph","Karen","Thomas","Sarah","Charles","Lisa","Christopher","Nancy","Daniel","Betty","Matthew","Margaret"];
+const LNAMES = ["Smith","Johnson","Williams","Brown","Jones","Garcia","Miller","Davis","Wilson","Taylor","Anderson","Thomas","Jackson","White","Harris","Martin","Thompson","Moore","Robinson","Clark"];
+
+function calcRisk(w, l) {
+  if (!w || !l) return 20;
+  let s = 0;
+  if (l.systolicBP > 160) s += 22; else if (l.systolicBP > 140) s += 13; else if (l.systolicBP > 130) s += 6;
+  if (l.fastingGlucose > 200) s += 22; else if (l.fastingGlucose > 126) s += 13; else if (l.fastingGlucose > 100) s += 5;
+  if (l.hba1c > 9) s += 14; else if (l.hba1c > 7) s += 7;
+  if (w.hrv < 20) s += 14; else if (w.hrv < 30) s += 7;
+  if (w.sleepDuration < 5) s += 10; else if (w.sleepDuration < 6) s += 5;
+  if (w.activityLevel < 2000) s += 9; else if (w.activityLevel < 3500) s += 4;
+  if (w.spo2 < 90) s += 18; else if (w.spo2 < 93) s += 9;
+  if (w.heartRate > 110) s += 9; else if (w.heartRate > 100) s += 4;
+  return Math.min(100, s);
+}
+
+function detectDeterioration(data) {
+  if (data.length < 14) return null;
+  const r = data.slice(-7), p = data.slice(-14, -7);
+  const avg = (arr, k) => arr.reduce((s,d)=>s+d[k],0)/arr.length;
+  const hrDelta = (avg(r,"heartRate")-avg(p,"heartRate"))/avg(p,"heartRate");
+  const slpDelta = (avg(p,"sleepDuration")-avg(r,"sleepDuration"))/avg(p,"sleepDuration");
+  const hrvDelta = (avg(p,"hrv")-avg(r,"hrv"))/avg(p,"hrv");
+  const score = Math.max(0,hrDelta)+Math.max(0,slpDelta)+Math.max(0,hrvDelta);
+  if (score > 0.38) return "Rapid Deterioration";
+  if (score > 0.13) return "Early Deterioration";
+  return null;
+}
+
+function buildAlerts(wearable30, labs, pid) {
+  const alerts = [];
+  const rng = mkRng(pid * 9999);
+  const latestW = wearable30[wearable30.length-1];
+  const latestL = labs[labs.length-1];
+
+  const highHR = wearable30.filter(d=>d.heartRate>100).length;
+  if (highHR >= 3) alerts.push({ id:`${pid}-hr`, type:"Tachycardia", msg:`Elevated HR detected ${highHR} of last 30 days`, level: highHR>=10?"Critical":"Warning", date:latestW?.date, metric:"Heart Rate" });
+
+  const poorSlp = wearable30.filter(d=>d.sleepDuration<5.5).length;
+  if (poorSlp >= 6) alerts.push({ id:`${pid}-slp`, type:"Sleep Disturbance", msg:`Poor sleep pattern: ${poorSlp} nights below 5.5 hrs`, level:"Warning", date:latestW?.date, metric:"Sleep" });
+
+  const lowHRV = wearable30.filter(d=>d.hrv<25).length;
+  if (lowHRV >= 5) alerts.push({ id:`${pid}-hrv`, type:"HRV Reduction", msg:`Autonomic stress: ${lowHRV} days with HRV < 25ms`, level: lowHRV>=12?"Critical":"Warning", date:latestW?.date, metric:"HRV" });
+
+  const lowAct = wearable30.filter(d=>d.activityLevel<2000).length;
+  if (lowAct >= 8) alerts.push({ id:`${pid}-act`, type:"Inactivity Alert", msg:`Activity critically low ${lowAct} days this month`, level:"Warning", date:latestW?.date, metric:"Activity" });
+
+  if (latestL) {
+    if (latestL.fastingGlucose > 200) alerts.push({ id:`${pid}-glc`, type:"Hyperglycemia", msg:`Fasting glucose critically high: ${latestL.fastingGlucose} mg/dL`, level:"Critical", date:latestL.date, metric:"Glucose" });
+    if (latestL.systolicBP > 160) alerts.push({ id:`${pid}-bp`, type:"Hypertensive Crisis", msg:`BP: ${latestL.systolicBP}/${latestL.diastolicBP} mmHg — urgent review required`, level:"Critical", date:latestL.date, metric:"Blood Pressure" });
+    if (latestL.creatinine > 1.4) alerts.push({ id:`${pid}-cr`, type:"Renal Decline", msg:`Creatinine ${latestL.creatinine} mg/dL — kidney function declining`, level: latestL.creatinine>1.8?"Critical":"Warning", date:latestL.date, metric:"Creatinine" });
+    if (latestL.hba1c > 9) alerts.push({ id:`${pid}-hba`, type:"Poor Glycemic Control", msg:`HbA1c ${latestL.hba1c}% — consider insulin therapy`, level:"Critical", date:latestL.date, metric:"HbA1c" });
+  }
+  return alerts;
+}
+
+function explainRisk(w, l) {
+  if (!w || !l) return ["Insufficient data for full analysis."];
+  const out = [];
+  if (l.systolicBP > 140) out.push(`🔴 Systolic BP ${l.systolicBP} mmHg exceeds 140 threshold (+${Math.round((l.systolicBP-140)/140*100)}% above normal)`);
+  if (l.fastingGlucose > 126) out.push(`🔴 Fasting glucose ${l.fastingGlucose} mg/dL in diabetic range (>126)`);
+  if (l.hba1c > 7) out.push(`🟡 HbA1c ${l.hba1c}% — 3-month average glucose control suboptimal`);
+  if (w.hrv < 30) out.push(`🟡 HRV ${w.hrv}ms reduced — indicates elevated autonomic nervous system stress`);
+  if (w.sleepDuration < 6) out.push(`🟡 Sleep ${w.sleepDuration}h — chronic sleep deficit elevates cortisol and inflammation`);
+  if (w.activityLevel < 3000) out.push(`🟡 Daily activity ${w.activityLevel} steps — physical deconditioning increases complication risk`);
+  if (w.spo2 < 93) out.push(`🔴 SpO2 ${w.spo2}% — oxygen saturation below safe threshold`);
+  if (l.creatinine > 1.2) out.push(`🟡 Creatinine ${l.creatinine} mg/dL — renal filtration efficiency declining`);
+  if (out.length === 0) out.push("✅ All primary indicators within acceptable ranges — low systemic risk");
+  return out;
+}
+
+function doctorRecs(p) {
+  const recs = [];
+  const w = p.wearable?.at(-1), l = p.labs?.at(-1);
+  if (l?.systolicBP > 140) recs.push({ urgency:"High", text:"Review antihypertensive regimen; consider ACE inhibitor dose titration or addition of ARB" });
+  if (l?.fastingGlucose > 126 || l?.hba1c > 7) recs.push({ urgency:"High", text:"Re-evaluate glucose-lowering therapy; consider GLP-1 receptor agonist or SGLT-2 inhibitor" });
+  if (w?.sleepDuration < 6) recs.push({ urgency:"Medium", text:"Polysomnography referral; screen for obstructive sleep apnea — high comorbidity with diabetes/HTN" });
+  if (w?.hrv < 25) recs.push({ urgency:"Medium", text:"Cardiac autonomic neuropathy workup; consider beta-blocker dose review" });
+  if (l?.creatinine > 1.2) recs.push({ urgency:"High", text:"Nephrology referral; adjust medication doses for eGFR; dietary protein restriction" });
+  if (w?.activityLevel < 2500) recs.push({ urgency:"Low", text:"Enroll in supervised cardiac rehabilitation; target 150 min moderate activity/week" });
+  if (p.riskScore >= 70) recs.push({ urgency:"Critical", text:"Urgent in-person evaluation within 24–48 hours; consider hospitalization for monitoring" });
+  if (p.deterioration === "Rapid Deterioration") recs.push({ urgency:"Critical", text:"Immediate hospital admission recommended — rapid multi-system deterioration detected" });
+  if (recs.length === 0) recs.push({ urgency:"Low", text:"Continue current management plan; schedule routine 3-month follow-up" });
+  return recs;
+}
+
+function generatePatients() {
+  return Array.from({ length: 24 }, (_, i) => {
+    const rng = mkRng(i * 7919 + 4321);
+    const diag = [DIAG_LIST[Math.floor(rng() * DIAG_LIST.length)]];
+    if (rng() > 0.55) diag.push(DIAG_LIST[Math.floor(rng() * DIAG_LIST.length)].replace(diag[0],DIAG_LIST[Math.floor(rng()*DIAG_LIST.length)])||diag[0]);
+    const uniqueDiag = [...new Set(diag)].slice(0,2);
+    const meds = (MED_MAP[uniqueDiag[0]]||[]).slice(0, 2+Math.floor(rng()*2));
+
+    const age = 45+Math.floor(rng()*35);
+    const isHTN = uniqueDiag.includes("Hypertension");
+    const isDM = uniqueDiag.includes("Type 2 Diabetes");
+    const isCVD = uniqueDiag.includes("Cardiovascular Disease")||uniqueDiag.includes("Atrial Fibrillation");
+    const isCKD = uniqueDiag.includes("Chronic Kidney Disease");
+
+    let bHR=68+Math.floor(rng()*18), bHRV=38+Math.floor(rng()*22), bSPO2=96+Math.floor(rng()*3),
+        bAct=4500+Math.floor(rng()*3500), bSlp=6.2+rng()*1.8,
+        bSys=118+Math.floor(rng()*25), bDia=74+Math.floor(rng()*12),
+        bGlc=88+Math.floor(rng()*30), bHba1c=5.4+rng()*1.8;
+
+    if (isHTN) { bSys+=22; bDia+=10; }
+    if (isDM) { bGlc+=45; bHba1c+=1.8; }
+    if (isCVD) { bHRV-=12; bHR+=12; }
+    if (isCKD) { bGlc+=10; }
+
+    const hasDet = rng()>0.45;
+    const detStart = 110+Math.floor(rng()*40);
+    const detSpeed = 0.5+rng()*0.5;
+
+    const startDate = new Date("2024-01-01");
+    const wearable = [], labs = [], visits = [];
+
+    for (let d=0; d<180; d++) {
+      const dt = new Date(startDate); dt.setDate(dt.getDate()+d);
+      const ds = dt.toISOString().slice(0,10);
+      const det = hasDet && d>detStart ? Math.min(1,(d-detStart)/30)*detSpeed : 0;
+      wearable.push({
+        date: ds,
+        heartRate: Math.max(48, Math.min(135, Math.round(bHR+(rng()-0.5)*14+det*18))),
+        hrv: Math.max(8, Math.round(bHRV+(rng()-0.5)*9-det*14)),
+        spo2: Math.max(86, Math.min(100, Math.round(bSPO2-rng()*1.8-det*4))),
+        activityLevel: Math.max(300, Math.round(bAct+(rng()-0.5)*2500-det*2800)),
+        sleepDuration: Math.max(2.5, Math.min(10, +(bSlp+(rng()-0.5)*1.4-det*1.5).toFixed(1))),
+      });
+      if (d%30===0) {
+        labs.push({
+          date: ds,
+          hba1c: +(bHba1c+(rng()-0.25)*0.6+det*1.0).toFixed(1),
+          fastingGlucose: Math.round(bGlc+(rng()-0.25)*22+det*55),
+          cholesterol: Math.round(178+rng()*65+det*22),
+          creatinine: +(0.78+rng()*0.65+det*0.45).toFixed(2),
+          systolicBP: Math.round(bSys+(rng()-0.25)*16+det*25),
+          diastolicBP: Math.round(bDia+(rng()-0.25)*9+det*12),
+        });
+        const types = ["Follow-up","Follow-up","Follow-up","Emergency Visit","Medication Review"];
+        visits.push({ date:ds, type: d===0?"Initial Consultation":types[Math.floor(rng()*types.length)], notes:"Vitals reviewed. Treatment plan updated." });
+      }
+    }
+
+    const latW = wearable.at(-1), latL = labs.at(-1);
+    const riskScore = calcRisk(latW, latL);
+    const alerts = buildAlerts(wearable.slice(-30), labs, i);
+    const deterioration = detectDeterioration(wearable);
+
+    return {
+      id: `P${String(i+1).padStart(3,"0")}`,
+      name: `${FNAMES[i%FNAMES.length]} ${LNAMES[Math.floor(i/FNAMES.length)%LNAMES.length]}`,
+      age, gender: rng()>0.5?"Male":"Female",
+      diagnosis: uniqueDiag, medications: meds,
+      wearable, labs, visits,
+      riskScore, riskCategory: riskScore>=70?"High":riskScore>=40?"Moderate":"Low",
+      alerts, deterioration,
+    };
+  });
+}
+
+const PATIENTS = generatePatients();
+
+/* ─────────────────────────────────────────────────────────────
+   SMALL UTILITY COMPONENTS
+───────────────────────────────────────────────────────────── */
+function RiskBadge({ score, cat }) {
+  const col = cat==="High"?C.red:cat==="Moderate"?C.amber:C.green;
+  const bg = cat==="High"?C.redGlow:cat==="Moderate"?C.amberGlow:C.greenGlow;
+  return (
+    <span style={{ fontFamily:"IBM Plex Mono",fontSize:11,fontWeight:600,padding:"3px 8px",borderRadius:4,background:bg,color:col,border:`1px solid ${col}33`,letterSpacing:"0.04em" }}>
+      {cat?.toUpperCase()}
+    </span>
+  );
+}
+
+function ScoreGauge({ score }) {
+  const col = score>=70?C.red:score>=40?C.amber:C.green;
+  const glowCol = score>=70?C.redGlow:score>=40?C.amberGlow:C.greenGlow;
+  const data = [{ value: score, fill: col }, { value: 100-score, fill: C.card }];
+  return (
+    <div style={{ position:"relative",width:160,height:160,margin:"0 auto" }}>
+      <RadialBarChart width={160} height={160} cx={80} cy={80} innerRadius={54} outerRadius={74} startAngle={210} endAngle={-30} data={[{value:score,fill:col}]}>
+        <PolarAngleAxis type="number" domain={[0,100]} angleAxisId={0} tick={false}/>
+        <RadialBar dataKey="value" cornerRadius={6} background={{ fill:C.border }} />
+      </RadialBarChart>
+      <div style={{ position:"absolute",inset:0,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center" }}>
+        <div style={{ fontFamily:"IBM Plex Mono",fontSize:32,fontWeight:700,color:col,lineHeight:1, textShadow:`0 0 20px ${col}` }}>{score}</div>
+        <div style={{ fontSize:10,color:C.textDim,letterSpacing:"0.1em",marginTop:2 }}>RISK SCORE</div>
+      </div>
+    </div>
+  );
+}
+
+function MetricPill({ label, value, unit, status }) {
+  const col = status==="critical"?C.red:status==="warning"?C.amber:status==="good"?C.green:C.teal;
+  return (
+    <div style={{ background:C.surface,border:`1px solid ${col}33`,borderRadius:8,padding:"10px 14px",minWidth:100 }}>
+      <div style={{ fontSize:9,color:C.textDim,letterSpacing:"0.1em",textTransform:"uppercase",marginBottom:4 }}>{label}</div>
+      <div style={{ fontFamily:"IBM Plex Mono",fontSize:20,fontWeight:600,color:col }}>{value}<span style={{ fontSize:11,color:C.textDim,marginLeft:3 }}>{unit}</span></div>
+    </div>
+  );
+}
+
+function AlertItem({ alert, compact }) {
+  const isCrit = alert.level==="Critical";
+  return (
+    <div style={{ display:"flex",gap:12,padding:compact?"10px 12px":"14px 16px",borderRadius:8,background: isCrit?`${C.redGlow}`:`${C.amberGlow}`,border:`1px solid ${isCrit?C.red:C.amber}33`,marginBottom:8,alignItems:"flex-start" }}>
+      <div style={{ marginTop:2, ...(isCrit?{animation:"blink 1.4s ease infinite"}:{}) }}>
+        <AlertTriangle size={14} color={isCrit?C.red:C.amber}/>
+      </div>
+      <div style={{ flex:1,minWidth:0 }}>
+        <div style={{ display:"flex",alignItems:"center",gap:8,flexWrap:"wrap" }}>
+          <span style={{ fontFamily:"IBM Plex Mono",fontSize:11,fontWeight:600,color:isCrit?C.red:C.amber }}>{alert.level}</span>
+          <span style={{ fontSize:12,fontWeight:600,color:C.text }}>{alert.type}</span>
+        </div>
+        {!compact && <div style={{ fontSize:12,color:C.textMid,marginTop:3 }}>{alert.msg}</div>}
+        {!compact && <div style={{ fontSize:10,color:C.textDim,marginTop:4,fontFamily:"IBM Plex Mono" }}>{alert.metric} • {alert.date}</div>}
+      </div>
+    </div>
+  );
+}
+
+const CTIP = ({ active, payload, label, extra }) => {
+  if (!active||!payload?.length) return null;
+  return (
+    <div style={{ background:C.card,border:`1px solid ${C.borderBright}`,borderRadius:8,padding:"10px 14px",fontSize:12 }}>
+      <div style={{ color:C.textDim,marginBottom:6,fontFamily:"IBM Plex Mono",fontSize:10 }}>{label}</div>
+      {payload.map((p,i)=>(
+        <div key={i} style={{ color:p.color||C.teal,fontFamily:"IBM Plex Mono",fontSize:13,fontWeight:600 }}>
+          {p.name}: {typeof p.value==="number"?p.value.toFixed(1):p.value} {extra||""}
+        </div>
+      ))}
+    </div>
+  );
+};
+
+/* ─────────────────────────────────────────────────────────────
+   CHART SECTION COMPONENT
+───────────────────────────────────────────────────────────── */
+function MetricChart({ data, dataKey, color, label, unit, refHigh, refLow, height=160 }) {
+  const sliced = data.slice(-60);
+  const fmt = (val) => val.toFixed(1);
+  return (
+    <div style={{ background:C.surface,borderRadius:10,padding:"16px",border:`1px solid ${C.border}` }}>
+      <div style={{ display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12 }}>
+        <span style={{ fontSize:12,fontWeight:600,color:C.textMid,letterSpacing:"0.05em" }}>{label}</span>
+        <span style={{ fontFamily:"IBM Plex Mono",fontSize:13,fontWeight:600,color:color }}>
+          {sliced.at(-1)?.[dataKey]?.toFixed(dataKey==="sleepDuration"?1:0)} <span style={{ fontSize:10,color:C.textDim }}>{unit}</span>
+        </span>
+      </div>
+      <ResponsiveContainer width="100%" height={height}>
+        <AreaChart data={sliced} margin={{ top:5,right:5,bottom:0,left:-20 }}>
+          <defs>
+            <linearGradient id={`grad-${dataKey}`} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor={color} stopOpacity={0.25}/>
+              <stop offset="100%" stopColor={color} stopOpacity={0}/>
+            </linearGradient>
+          </defs>
+          <CartesianGrid strokeDasharray="2 4" stroke={C.border} vertical={false}/>
+          <XAxis dataKey="date" tick={{fontSize:9,fill:C.textDim}} tickLine={false} axisLine={false}
+            tickFormatter={v=>v.slice(5)} interval={Math.floor(sliced.length/6)}/>
+          <YAxis tick={{fontSize:9,fill:C.textDim,fontFamily:"IBM Plex Mono"}} tickLine={false} axisLine={false}/>
+          {refHigh && <ReferenceLine y={refHigh} stroke={C.red} strokeDasharray="3 3" strokeWidth={1}/>}
+          {refLow && <ReferenceLine y={refLow} stroke={C.amber} strokeDasharray="3 3" strokeWidth={1}/>}
+          <Tooltip content={<CTIP extra={unit}/>}/>
+          <Area type="monotone" dataKey={dataKey} stroke={color} strokeWidth={1.5} fill={`url(#grad-${dataKey})`} dot={false} name={label}/>
+        </AreaChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+/* ────────────────────────────────────────────
